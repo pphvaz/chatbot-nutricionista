@@ -30,7 +30,7 @@ Ps: one will be the assistent, the other will be the user
 === STEP 4 ===
 
 4.1 Download and install ngrok (https://ngrok.com/)
-4.2 Run `npm i` in your terminal already in the whatsapp-openai paste
+4.2 Run `npm i` in your terminal already in the whatsapp-openai folder
 4.3 Run `npm start` in your terminal so you start serving the api
 4.4 Run `ngrok http 3000` in your terminal, in order to get the api endpoint Public URL
 4.5 Copy this URL and paste as the destination in the n8n workflow on the third step, the HTTP POST Request
