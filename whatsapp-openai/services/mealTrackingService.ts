@@ -33,7 +33,7 @@ export async function processNewMeal(message: string, phone: string, openai: Ope
 
     try {
         const response = await openai.chat.completions.create({
-            model: "gpt-4",
+            model: "gpt-4.1",
             messages: [{ role: "system", content: prompt }],
             temperature: 0.1
         });

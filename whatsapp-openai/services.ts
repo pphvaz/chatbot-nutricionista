@@ -88,7 +88,7 @@ export async function algoritmoDeTratamentoDeMensagens(messageBuffer: string, ph
         }
 
         // Apresentação em partes
-        const apresentacao = `Me chamo Zubi, sou seu nutri journal. 🌱`;
+        const apresentacao = `Me chamo Zibu, sou seu nutri journal. 🌱`;
         mensagens.push(apresentacao);
         MemoryStorage.addMensagemAoHistorico(phone, apresentacao, 'system');
         await sendText(phone, apresentacao);
@@ -173,7 +173,7 @@ export async function algoritmoDeTratamentoDeMensagens(messageBuffer: string, ph
         `;
 
         const questionResponse = await openai.chat.completions.create({
-            model: "gpt-4",
+            model: "gpt-4.1",
             messages: [{ role: "system", content: questionPrompt }],
             temperature: 0.7,
         });
@@ -203,7 +203,7 @@ export async function algoritmoDeTratamentoDeMensagens(messageBuffer: string, ph
             // Aguardar um momento antes de fazer a próxima pergunta
             await new Promise(resolve => setTimeout(resolve, 1500));
             
-            const nextQuestion = await generateNextQuestion(patient, missingFields[0]);
+            const nextQuestion = await generateNextQuestion(patient, missingFields[0], phone);
             MemoryStorage.addMensagemAoHistorico(phone, nextQuestion, 'system');
             return nextQuestion;
         } else {
@@ -211,7 +211,7 @@ export async function algoritmoDeTratamentoDeMensagens(messageBuffer: string, ph
             const resumo = gerarResumoPaciente(patient);
             console.log('TMB e informações do paciente:', resumo);
             const analise = await openai.chat.completions.create({
-                model: "gpt-4",
+                model: "gpt-4.1",
                 messages: [
                     { role: "system", content: analiseTMBPrompt },
                     { role: "user", content: resumo }
@@ -244,7 +244,7 @@ export async function algoritmoDeTratamentoDeMensagens(messageBuffer: string, ph
              ultimasMensagens[0].content.includes('meta'))) {
             const resumo = gerarResumoPaciente(patient);
             const analise = await openai.chat.completions.create({
-                model: "gpt-4",
+                model: "gpt-4.1",
                 messages: [
                     { role: "system", content: analiseTMBPrompt },
                     { role: "user", content: resumo }
@@ -281,175 +281,103 @@ export async function algoritmoDeTratamentoDeMensagens(messageBuffer: string, ph
 }
 
 async function extractInformation(message: string, ultimaPergunta: string = '', phone: string = '') {
-    // Se for uma resposta numérica simples, primeiro verificar o contexto da última pergunta
-    const numericResponse = parseFloat(message.trim());
-    if (!isNaN(numericResponse) && ultimaPergunta) {
-        const extractedInfo: ExtractedInfo = {};
-        
-        // Verificar o contexto da última pergunta
-        const perguntaLower = ultimaPergunta.toLowerCase();
-        if (perguntaLower.includes('peso') || perguntaLower.includes('kilos') || perguntaLower.includes('kg')) {
-            if (isValidWeight(numericResponse)) {
-                extractedInfo.weight = numericResponse;
-                return {
-                    extracted: extractedInfo,
-                    hasQuestion: false,
-                    questionContext: null
-                };
-            }
-        } else if (perguntaLower.includes('altura') || perguntaLower.includes('cm')) {
-            const height = numericResponse > 3 ? numericResponse : numericResponse * 100;
-            if (isValidHeight(height)) {
-                extractedInfo.height = height;
-                return {
-                    extracted: extractedInfo,
-                    hasQuestion: false,
-                    questionContext: null
-                };
-            }
-        } else if (perguntaLower.includes('idade') || perguntaLower.includes('anos')) {
-            if (isValidAge(numericResponse)) {
-                extractedInfo.age = numericResponse;
-                return {
-                    extracted: extractedInfo,
-                    hasQuestion: false,
-                    questionContext: null
-                };
-            }
-        }
-    }
+    const historico = MemoryStorage.getHistoricoDoDia(phone);
+    const ultimasMensagens = historico.slice(-3); // Últimas 3 mensagens para contexto
+    const contextoConversa = ultimasMensagens.map(msg => 
+        `[${msg.role === 'system' ? 'ZIBU BOT' : 'CLIENTE'}]: ${msg.content}`
+    ).join('\n');
 
-    // Se não for uma resposta numérica simples ou não houver contexto, continuar com a análise completa
-    const initialPrompt = `
-    Analise cuidadosamente esta mensagem do paciente e extraia TODAS as informações úteis encontradas:
-    "${message}"
-
-    Última pergunta feita: "${ultimaPergunta}"
-
-    IMPORTANTE: 
-    1. Extraia TODAS as informações presentes, mesmo que múltiplas
-    2. Se a última pergunta foi sobre um dado específico (peso, altura, etc), priorize esse contexto
-    3. Números sozinhos devem ser interpretados no contexto da última pergunta
+    const prompt = `
+    Analise cuidadosamente esta conversa entre o bot nutricional (Zibu) e o cliente.
     
-    Formate sua resposta exatamente assim:
+    CONTEXTO DA CONVERSA (3 últimas mensagens):
+    ${contextoConversa}
+    
+    MENSAGEM ATUAL DO CLIENTE: "${message}"
+    ÚLTIMA PERGUNTA DO BOT: "${ultimaPergunta}"
 
-    INFORMAÇÕES ENCONTRADAS:
-    - Nome: [valor exato ou null]
-    - Idade: [número ou null]
-    - Gênero: [masculino/feminino ou null]
-    - Peso: [número em kg ou null]
-    - Altura: [número em metros ou null]
-    - Nível de Atividade: [sedentario/leve/moderado/ativo/muito ativo ou null]
-    - Objetivo: [perda de peso/ganho de massa muscular/manutenção ou null]
+    OBJETIVO: Extrair APENAS informações fornecidas pelo CLIENTE, ignorando mensagens do bot.
 
-    ANÁLISE:
-    - Há pergunta do paciente? [sim/não]
-    - Contexto da pergunta: [descrição ou null]
-    - Confiança geral: [alta/média/baixa]
-    `;
+    IMPORTANTE:
+    1. APENAS analise as mensagens do CLIENTE, IGNORE as mensagens do BOT
+    2. Considere diferentes formatos de números (1.80m, 180cm, 1,80 são a mesma altura)
+    3. Interprete unidades implícitas baseado no contexto
+    4. Considere gírias e linguagem informal
+    5. Identifique informações mesmo quando expressas de forma indireta
+    
+    EXEMPLOS DE INTERPRETAÇÃO:
+    [ZIBU BOT]: "Qual sua altura?"
+    [CLIENTE]: "Um e oitenta" → altura: 180cm
+    
+    [ZIBU BOT]: "Me diz seu peso?"
+    [CLIENTE]: "Tô com 86" → peso: 86kg
+    
+    [ZIBU BOT]: "Como você se exercita?"
+    [CLIENTE]: "Malho todo dia" → nível de atividade: muito ativo
+    
+    [ZIBU BOT]: "Me diz seu nome?"
+    [CLIENTE]: "Pedro" → nome: Pedro
+    [ZIBU BOT]: "Olá Pedro!" → IGNORAR, é mensagem do bot
+    
+    RETORNE UM JSON EXATO:
+    {
+      "informacoes": {
+        "nome": string | null,
+        "idade": number | null,
+        "genero": "masculino" | "feminino" | null,
+        "peso": number | null,
+        "altura": number | null,
+        "nivel_atividade": "sedentario" | "leve" | "moderado" | "ativo" | "muito ativo" | null,
+        "objetivo": "perda de peso" | "ganho de massa muscular" | "manutenção" | null
+      },
+      "analise": {
+        "tem_pergunta": boolean,
+        "contexto_pergunta": string | null,
+        "confianca": "alta" | "media" | "baixa"
+      }
+    }`;
 
-    const analysisResponse = await openai.chat.completions.create({
-        model: "gpt-4",
-        messages: [{ role: "user", content: initialPrompt }],
+    const response = await openai.chat.completions.create({
+        model: "gpt-4.1",
+        messages: [{ role: "user", content: prompt }],
         temperature: 0.1,
+        response_format: { type: "json_object" }
     });
 
-    const analysisContent = analysisResponse.choices[0].message.content;
-    if (!analysisContent) {
+    try {
+        const analysis = JSON.parse(response.choices[0].message.content || "{}");
+        console.log('Análise completa:', analysis);
+
+        // Obter o paciente atual ou criar um novo
+        const patient = MemoryStorage.getPacient(phone) || new Pacient();
+        
+        console.log('Paciente atual:', patient);
+
+        // Atualizar informações do paciente
+        if (analysis.informacoes) {
+            const info = analysis.informacoes;
+            if (info.nome && isValidName(info.nome)) patient.name = info.nome;
+            if (info.idade && isValidAge(info.idade)) patient.age = info.idade;
+            if (info.genero && isValidGender(info.genero)) patient.gender = info.genero;
+            if (info.peso && isValidWeight(info.peso)) patient.weight = info.peso;
+            if (info.altura && isValidHeight(info.altura)) patient.height = info.altura;
+            if (info.nivel_atividade && isValidActivityLevel(info.nivel_atividade)) patient.activityLevel = info.nivel_atividade;
+            if (info.objetivo && isValidGoal(info.objetivo)) patient.goal = info.objetivo;
+
+            // Salvar paciente atualizado na memória
+            MemoryStorage.savePacient(phone, patient);
+            console.log('Paciente atualizado:', patient);
+        }
+
+        return {
+            extracted: analysis.informacoes,
+            hasQuestion: analysis.analise.tem_pergunta,
+            questionContext: analysis.analise.contexto_pergunta
+        };
+    } catch (error) {
+        console.error('Erro ao processar resposta:', error);
         return { extracted: null, hasQuestion: false, questionContext: null };
     }
-
-    console.log('Análise completa:', analysisContent);
-
-    const extractedInfo: ExtractedInfo = {};
-    const lines = analysisContent.split('\n');
-    let hasQuestion = false;
-    let questionContext = null;
-    let foundAnyInfo = false;
-
-    for (const line of lines) {
-        const trimmedLine = line.trim();
-        if (trimmedLine.startsWith('- Nome:')) {
-            const name = trimmedLine.split(':')[1].trim();
-            if (name !== 'null' && name !== '[null]' && isValidName(name)) {
-                extractedInfo.name = name.replace(/[\[\]]/g, '');
-                foundAnyInfo = true;
-            }
-        } else if (trimmedLine.startsWith('- Idade:')) {
-            const ageStr = trimmedLine.split(':')[1].trim().replace(/[\[\]]/g, '');
-            const age = parseInt(ageStr);
-            if (!isNaN(age) && isValidAge(age)) {
-                extractedInfo.age = age;
-                foundAnyInfo = true;
-            }
-        } else if (trimmedLine.startsWith('- Gênero:')) {
-            const gender = trimmedLine.split(':')[1].trim().replace(/[\[\]]/g, '');
-            if (gender !== 'null' && isValidGender(gender)) {
-                extractedInfo.gender = gender as 'masculino' | 'feminino';
-                foundAnyInfo = true;
-            }
-        } else if (trimmedLine.startsWith('- Peso:')) {
-            const weightStr = trimmedLine.split(':')[1].trim().replace(/[\[\]]/g, '');
-            const weight = parseFloat(weightStr);
-            if (!isNaN(weight) && isValidWeight(weight)) {
-                extractedInfo.weight = weight;
-                foundAnyInfo = true;
-            }
-        } else if (trimmedLine.startsWith('- Altura:')) {
-            let heightStr = trimmedLine.split(':')[1].trim().replace(/[\[\]]/g, '');
-            let height = parseFloat(heightStr);
-            if (!isNaN(height)) {
-                if (height > 3) { // Se altura está em centímetros
-                    height = height / 100;
-                }
-                if (isValidHeight(height * 100)) {
-                    extractedInfo.height = height * 100;
-                    foundAnyInfo = true;
-                }
-            }
-        } else if (trimmedLine.startsWith('- Nível de Atividade:')) {
-            const level = trimmedLine.split(':')[1].trim().replace(/[\[\]]/g, '');
-            if (level !== 'null' && isValidActivityLevel(level)) {
-                extractedInfo.activityLevel = level as 'sedentario' | 'leve' | 'moderado' | 'ativo' | 'muito ativo';
-                foundAnyInfo = true;
-            }
-        } else if (trimmedLine.startsWith('- Objetivo:')) {
-            const goal = trimmedLine.split(':')[1].trim().replace(/[\[\]]/g, '');
-            if (goal !== 'null' && isValidGoal(goal)) {
-                extractedInfo.goal = goal as 'perda de peso' | 'ganho de massa muscular' | 'manutenção';
-                foundAnyInfo = true;
-            }
-        } else if (trimmedLine.includes('Há pergunta do paciente?')) {
-            hasQuestion = trimmedLine.toLowerCase().includes('sim');
-        } else if (trimmedLine.startsWith('- Contexto da pergunta:')) {
-            const context = trimmedLine.split(':')[1].trim().replace(/[\[\]]/g, '');
-            if (context !== 'null') {
-                questionContext = context;
-            }
-        }
-    }
-
-    // Se não encontrou informações pelo método direto, tenta processar baseado no contexto da última pergunta
-    if (!foundAnyInfo && ultimaPergunta) {
-        const isGenderQuestion = ultimaPergunta.toLowerCase().includes('homem ou mulher') || 
-                               ultimaPergunta.toLowerCase().includes('h/m') ||
-                               ultimaPergunta.toLowerCase().includes('sexo');
-                               
-        if (isGenderQuestion && message.length <= 2) {
-            const normalizedResponse = message.trim().toLowerCase();
-            if (['h', 'm', 'homem', 'mulher'].includes(normalizedResponse)) {
-                const gender: Gender = (normalizedResponse === 'h' || normalizedResponse === 'homem') ? 'masculino' : 'feminino';
-                extractedInfo.gender = gender;
-                foundAnyInfo = true;
-            }
-        }
-    }
-
-    return {
-        extracted: foundAnyInfo ? extractedInfo : null,
-        hasQuestion,
-        questionContext
-    };
 }
 
 function determineQuestionType(question: string): QuestionContext['type'] | null {
@@ -463,39 +391,6 @@ function determineQuestionType(question: string): QuestionContext['type'] | null
     if (questionLower.includes('atividade') || questionLower.includes('exercício')) return 'nivel_atividade';
     if (questionLower.includes('objetivo') || questionLower.includes('meta')) return 'objetivo';
     
-    return null;
-}
-
-async function inferGenderFromName(name: string): Promise<string | null> {
-    const prompt = `
-    Analise o seguinte nome e determine o gênero biológico mais provável com base nos padrões de nomes em português.
-    Nome: "${name}"
-    
-    Regras:
-    1. Retorne APENAS "masculino" ou "feminino" se tiver alta confiança
-    2. Retorne "null" se o nome for ambíguo ou não tiver certeza
-    3. Considere:
-       - Terminações típicas (-a, -ana, -ela para feminino; -o, -dro, -los para masculino)
-       - Nomes compostos (considere todas as partes)
-       - Nomes tradicionalmente associados a cada gênero
-    
-    Exemplos:
-    "Maria" -> "feminino"
-    "João" -> "masculino"
-    "Alex" -> null
-    "Andrea" -> null (pode ser usado para ambos os gêneros)
-    `;
-
-    const response = await openai.chat.completions.create({
-        model: "gpt-4",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.1,
-    });
-
-    const inferredGender = response.choices[0].message.content?.trim().toLowerCase();
-    if (inferredGender === 'masculino' || inferredGender === 'feminino') {
-        return inferredGender;
-    }
     return null;
 }
 
@@ -546,59 +441,61 @@ function getMissingFields(patient: Pacient): string[] {
     return missing;
 }
 
-async function generateNextQuestion(patient: Pacient, missingField: string): Promise<string> {
+async function generateNextQuestion(patient: Pacient, missingField: string, phone: string): Promise<string> {
+    // Obter histórico recente para contexto
+    const historico = MemoryStorage.getHistoricoDoDia(phone);
+    const ultimasMensagens = historico.slice(-3); // Últimas 3 mensagens
+    const contextoConversa = ultimasMensagens.map(msg => 
+        `${msg.role === 'system' ? 'Nutri' : 'Paciente'}: ${msg.content}`
+    ).join('\n');
+
     const prompt = `
-    Como uma nutricionista profissional, gere uma pergunta direta e objetiva para obter o(a) ${missingField} do paciente.
-    Considere o que já sabemos sobre o paciente:
+    Como uma nutricionista empática e profissional, gere uma pergunta natural para obter o(a) ${missingField} do paciente.
+    
+    CONTEXTO ATUAL:
     ${JSON.stringify(patient, null, 2)}
     
-    Regras:
-    1. Se o campo for 'sexo', pergunte apenas "Você é homem ou mulher? (H/M)"
-    2. Se faltam altura E peso, pergunte os dois juntos: "Qual sua altura (em cm) e peso (em kg)?"
-    3. Se o campo for 'nível de atividade física', use a seguinte estrutura:
-       "Qual é o seu nível de atividade física semanal?
-       
-       Escolha uma das opções:
-       - Sedentário (pouco ou nenhum exercício)
-       - Leve (exercício 1-3 vezes por semana)
-       - Moderado (exercício 3-5 vezes por semana)
-       - Ativo (exercício 6-7 vezes por semana)
-       - Muito ativo (exercícios intensos, 6-7 vezes por semana)"
-    4. Mantenha as perguntas diretas e profissionais
-    5. Evite linguagem muito informal ou emojis excessivos
+    ÚLTIMAS MENSAGENS:
+    ${contextoConversa}
+    
+    REGRAS IMPORTANTES:
+    1. Seja natural e empática, mas mantenha o foco profissional
+    2. Adapte o tom baseado no contexto da conversa
+    3. Use o nome do paciente se disponível
+    4. Inclua a unidade de medida quando necessário (kg, cm, etc)
+    5. Use no máximo 2 emojis
+    6. Mantenha a pergunta em UMA linha
+    7. Se o paciente demonstrou dúvida ou hesitação, explique brevemente o porquê da pergunta
+    
+    E O MAIS IMPORTANTE: RESPONDA CONFORME O HUMOR DO PACIENTE, SE ELE FOR BRINCALHÃO, PODE SER MAIS INFORMAL E USAR GÍRIAS
+
+    Se ele for mais formal, responda de forma mais profissional e direta.
+    
+    FORMATOS DE EXEMPLO:
+    - Para gênero: "Você é homem ou mulher? (H/M)"
+    - Para altura e peso juntos: "Qual sua altura (em cm) e peso (em kg)?"
+    - Para nível de atividade física, inclua todas as opções:
+      Sedentário (pouco ou nenhum exercício)
+      Leve (exercício 1-3 vezes por semana)
+      Moderado (exercício 3-5 vezes por semana)
+      Ativo (exercício 6-7 vezes por semana)
+      Muito ativo (exercícios intensos, 6-7 vezes por semana)
+
+    EXEMPLOS DE TOM NATURAL:
+    ❌ "Por favor, informe seu peso atual em quilogramas."
+    ✅ "Me conta, quanto você tá pesando? 😊"
+    
+    ❌ "Qual é a sua altura em centímetros?"
+    ✅ "E sua altura? (em cm) 📏"
     `;
 
     const response = await openai.chat.completions.create({
-        model: "gpt-4",
+        model: "gpt-4.1",
         messages: [{ role: "user", content: prompt }],
         temperature: 0.7,
     });
 
-    const perguntaGerada = response.choices[0].message.content || `Por favor, me informe seu ${missingField}:`;
-    
-    // Se ainda faltam altura e peso, combine as perguntas
-    if (missingField === 'altura' && !patient.weight) {
-        return "Qual sua altura (em cm) e peso (em kg)?";
-    }
-    
-    // Se for pergunta de gênero, use o formato direto
-    if (missingField === 'sexo') {
-        return "Você é homem ou mulher? (H/M)";
-    }
-
-    // Se for nível de atividade física, use o formato padronizado
-    if (missingField === 'nível de atividade física') {
-        return `Qual é o seu nível de atividade física semanal?
-
-Escolha uma das opções:
-- Sedentário (pouco ou nenhum exercício)
-- Leve (exercício 1-3 vezes por semana)
-- Moderado (exercício 3-5 vezes por semana)
-- Ativo (exercício 6-7 vezes por semana)
-- Muito ativo (exercícios intensos, 6-7 vezes por semana)`;
-    }
-    
-    return perguntaGerada;
+    return response.choices[0].message.content || `Por favor, me informe seu ${missingField}:`;
 }
 
 // Funções de validação
@@ -651,7 +548,7 @@ export async function generateAnswer(openai: OpenAI, message: string, prompt: st
 
     // Verifica se a mensagem contém informações sobre o paciente
     const data = await openai.chat.completions.create({
-        model: "gpt-4.1-mini",
+        model: "gpt-4.1",
         messages: [
             { role: "system", content: prompt },
             { role: "user", content: message }
@@ -684,7 +581,7 @@ async function classifyMessage(message: string, openai: OpenAI): Promise<'anamne
     `;
 
     const response = await openai.chat.completions.create({
-        model: "gpt-4",
+        model: "gpt-4.1",
         messages: [{ role: "system", content: prompt }],
         temperature: 0.1,
     });

@@ -2,6 +2,7 @@ import { OpenAI } from 'openai';
 import { MemoryStorage } from '../entities/memoryStorage';
 import { algoritmoDeTratamentoDeMensagens } from '../services';
 import { processNutritionJournal } from './nutritionJournalService';
+import { Pacient } from '../entities/Pacient';
 
 interface AnalysisResult {
     found: boolean;
@@ -42,77 +43,66 @@ async function quickAnalyzeMessage(message: string, historico: { role: string; c
     const lastMessages = historico.slice(-2);
     const lastQuestion = lastMessages.length > 1 ? lastMessages[0].content.toLowerCase() : '';
     
-    // Verificar confirmações diretas e objetivos
-    if (lastQuestion.includes('objetivo') || lastQuestion.includes('meta')) {
-        if (messageLower.includes('massa') || messageLower.includes('muscular') || messageLower.includes('ganhar')) {
-            return [{
-                found: true,
-                informationType: 'objetivo',
-                value: 'ganho de massa muscular',
-                originalMessage: message,
-                confidence: 0.9
-            }];
-        } else if (messageLower.includes('perd') || messageLower.includes('emagrecer')) {
-            return [{
-                found: true,
-                informationType: 'objetivo',
-                value: 'perda de peso',
-                originalMessage: message,
-                confidence: 0.9
-            }];
-        } else if (messageLower.includes('mant')) {
-            return [{
-                found: true,
-                informationType: 'objetivo',
-                value: 'manutenção',
-                originalMessage: message,
-                confidence: 0.9
-            }];
-        }
-    }
+    const contextPrompt = `
+    Analise a mensagem do paciente e o contexto da conversa para extrair informações e gerar uma resposta empática.
 
-    // Verificar outras confirmações diretas
-    if (['sim', 'exato', 'exatamente', 'isso', 'isso mesmo', 'correto', 'é isso'].includes(messageLower)) {
-        const extractedInfo = extractInformationFromQuestion(lastQuestion);
-        if (extractedInfo.type && extractedInfo.value) {
-            return [{
-                found: true,
-                informationType: extractedInfo.type,
-                value: extractedInfo.value,
-                originalMessage: message,
-                confidence: 0.9
-            }];
-        }
-    }
-
-    const prompt = `Extraia informações nutricionais desta mensagem:
-    
-    MENSAGEM: "${message}"
     ÚLTIMA PERGUNTA: "${lastQuestion}"
-    
-    Retorne apenas um JSON array com as informações encontradas:
-    [
-        {
-            "found": true,
-            "informationType": "tipo_da_info",
-            "value": "valor_encontrado",
-            "originalMessage": "texto_original",
-            "confidence": 0.9
-        }
-    ]`;
+    RESPOSTA DO PACIENTE: "${message}"
+
+    OBJETIVOS:
+    1. Extrair dados importantes (peso, altura, objetivo, etc.)
+    2. Identificar o contexto emocional
+    3. Detectar se há perguntas do paciente
+    4. Manter uma conversa natural e empática
+
+    CONTEXTOS POSSÍVEIS:
+    - Objetivo fitness (perda de peso, ganho de massa, manutenção)
+    - Dúvidas sobre nutrição
+    - Preocupações com saúde
+    - Frustração com dietas anteriores
+    - Ansiedade sobre resultados
+    - Dificuldades com alimentação
+
+    Por favor, retorne um JSON com:
+    {
+        "analysis": [{
+            "found": boolean,
+            "informationType": string,
+            "value": any,
+            "confidence": number
+        }],
+        "context": {
+            "hasQuestion": boolean,
+            "emotionalTone": string,
+            "concerns": string[],
+            "requiresFollowUp": boolean
+        },
+        "suggestedResponse": string
+    }`;
 
     try {
         const completion = await openai.chat.completions.create({
-            model: 'gpt-3.5-turbo',
-            messages: [{ role: 'system', content: prompt }],
-            temperature: 0.1,
+            model: 'gpt-4.1',
+            messages: [{ role: 'system', content: contextPrompt }],
+            temperature: 0.7,
             response_format: { type: "json_object" }
         });
 
-        const result = JSON.parse(completion.choices[0].message.content || "[]");
-        return Array.isArray(result) ? result : [];
+        const result = JSON.parse(completion.choices[0].message.content || "{}");
+        
+        // Se houver uma pergunta ou preocupação do paciente, salvar no contexto
+        if (result.context?.hasQuestion || result.context?.concerns?.length > 0) {
+            MemoryStorage.addContextoUtil(lastQuestion, message, 'pergunta_paciente', result.context.emotionalTone, result.context.concerns);
+        }
+
+        // Se tiver uma resposta sugerida, salvar para uso posterior
+        if (result.suggestedResponse) {
+            MemoryStorage.addMensagemAoHistorico(result.suggestedResponse, 'system');
+        }
+
+        return result.analysis || [];
     } catch (error) {
-        console.error("Erro na análise rápida:", error);
+        console.error("Erro na análise contextual:", error);
         return [];
     }
 }
@@ -125,72 +115,163 @@ async function updatePatientWithAnalysis(patient: any, analyses: AnalysisResult[
 
         switch (analysis.informationType.toLowerCase()) {
             case 'peso':
-                if (!patient.weight && !isNaN(Number(analysis.value))) {
+                if (!isNaN(Number(analysis.value))) {
                     patient.weight = Number(analysis.value);
                     updatedFields.push(`peso: ${analysis.value}kg`);
                 }
                 break;
             case 'altura':
-                if (!patient.height && !isNaN(Number(analysis.value))) {
+                if (!isNaN(Number(analysis.value))) {
                     patient.height = Number(analysis.value);
                     updatedFields.push(`altura: ${analysis.value}cm`);
                 }
                 break;
             case 'nivel_atividade':
             case 'atividade_fisica':
-                if (!patient.activityLevel) {
-                    patient.activityLevel = String(analysis.value);
-                    updatedFields.push(`nível de atividade: ${analysis.value}`);
-                }
+                patient.activityLevel = String(analysis.value);
+                updatedFields.push(`nível de atividade: ${analysis.value}`);
                 break;
             case 'objetivo':
-                if (!patient.goal) {
-                    const goalText = String(analysis.value).toLowerCase();
-                    if (goalText.includes('massa') || goalText.includes('muscular') || goalText.includes('ganhar')) {
-                        patient.goal = 'ganho de massa muscular';
-                    } else if (goalText.includes('perd') && goalText.includes('peso') || goalText.includes('emagrecer')) {
-                        patient.goal = 'perda de peso';
-                    } else if (goalText.includes('mant')) {
-                        patient.goal = 'manutenção';
-                    }
-                    if (patient.goal) {
-                        updatedFields.push(`objetivo: ${patient.goal}`);
-                    }
+                const goalText = String(analysis.value).toLowerCase();
+                if (goalText.includes('massa') || goalText.includes('muscular')) {
+                    patient.goal = 'ganho de massa muscular';
+                } else if (goalText.includes('perd') || goalText.includes('emagrecer')) {
+                    patient.goal = 'perda de peso';
+                } else if (goalText.includes('mant')) {
+                    patient.goal = 'manutenção';
+                }
+                if (patient.goal) {
+                    updatedFields.push(`objetivo: ${patient.goal}`);
+                }
+                break;
+            case 'genero':
+                if (['masculino', 'feminino'].includes(String(analysis.value).toLowerCase())) {
+                    patient.gender = String(analysis.value).toLowerCase();
+                    updatedFields.push(`gênero: ${patient.gender}`);
+                }
+                break;
+            case 'idade':
+                if (!isNaN(Number(analysis.value))) {
+                    patient.age = Number(analysis.value);
+                    updatedFields.push(`idade: ${patient.age}`);
                 }
                 break;
         }
     }
-
+    
     return updatedFields;
+}
+
+async function analyzeMessageIntent(message: string, historico: any[], patient: Pacient | null, openai: OpenAI): Promise<{
+    tipo: 'refeicao' | 'consulta_info' | 'duvida_nutricional' | 'outro';
+    contexto: string;
+    sugestao_resposta: string;
+}> {
+    const ultimasMensagens = historico.slice(-3);
+    const contextoConversa = ultimasMensagens.map(msg => 
+        `[${msg.role === 'system' ? 'ZIBU BOT' : 'CLIENTE'}]: ${msg.content}`
+    ).join('\n');
+
+    const prompt = `
+    Analise esta mensagem do cliente no contexto de uma conversa com um assistente nutricional.
+
+    CONTEXTO DA CONVERSA:
+    ${contextoConversa}
+
+    MENSAGEM ATUAL: "${message}"
+    
+    INFORMAÇÕES DO PACIENTE:
+    ${patient ? JSON.stringify(patient, null, 2) : 'Ainda não coletadas'}
+
+    OBJETIVO: Classificar a intenção da mensagem e gerar uma resposta apropriada.
+
+    REGRAS DE CLASSIFICAÇÃO:
+    1. PRIORIZE identificar menções a alimentos/refeições
+    2. Se houver QUALQUER menção a comida, classifique como 'refeicao'
+    3. Se for pergunta sobre dados do paciente, classifique como 'consulta_info'
+    4. Se for dúvida sobre nutrição, classifique como 'duvida_nutricional'
+    5. Outros casos, classifique como 'outro'
+
+    EXEMPLOS:
+    "Comi um pão" → refeicao
+    "Quais são meus dados?" → consulta_info
+    "Quantas calorias tem uma maçã?" → duvida_nutricional
+    "Bom dia" → outro
+
+    RETORNE UM JSON EXATO:
+    {
+      "classificacao": {
+        "tipo": "refeicao" | "consulta_info" | "duvida_nutricional" | "outro",
+        "confianca": "alta" | "media" | "baixa",
+        "palavras_chave": string[]
+      },
+      "contexto": string,
+      "sugestao_resposta": string
+    }`;
+
+    const response = await openai.chat.completions.create({
+        model: "gpt-4.1",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.7,
+        response_format: { type: "json_object" }
+    });
+
+    try {
+        const analysis = JSON.parse(response.choices[0].message.content || "{}");
+        
+        // Se for consulta de informações, formatar resposta com dados do paciente
+        if (analysis.classificacao.tipo === 'consulta_info' && patient) {
+            analysis.sugestao_resposta = `Claro! Aqui estão suas informações:
+Nome: ${patient.name}
+Idade: ${patient.age} anos
+Peso: ${patient.weight}kg
+Altura: ${patient.height}cm
+Nível de Atividade: ${patient.activityLevel}
+Objetivo: ${patient.goal}
+
+Posso ajudar com mais alguma coisa? 😊`;
+        }
+
+        return {
+            tipo: analysis.classificacao.tipo,
+            contexto: analysis.contexto,
+            sugestao_resposta: analysis.sugestao_resposta
+        };
+    } catch (error) {
+        console.error('Erro ao analisar intenção da mensagem:', error);
+        return {
+            tipo: 'outro',
+            contexto: 'Erro na análise',
+            sugestao_resposta: 'Desculpe, não entendi sua mensagem. Pode reformular? 😅'
+        };
+    }
 }
 
 export async function routeMessage(message: string, phone: string, openai: OpenAI): Promise<string> {
     try {
         const patient = MemoryStorage.getPacient(phone);
-        const historicoDoDia = MemoryStorage.getHistoricoDoDia(phone);
+        const historico = MemoryStorage.getHistoricoDoDia(phone);
         
-        // Se a anamnese não está completa, continuar com o fluxo de anamnese
+        // Se a anamnese não está completa, continuar com o fluxo normal
         if (!patient || !isAnamnesisComplete(patient)) {
-            // Análise rápida inicial com GPT-3.5
-            const analysisResults = await quickAnalyzeMessage(message, historicoDoDia, openai);
-            
-            if (analysisResults.length > 0 && patient) {
-                const updatedFields = await updatePatientWithAnalysis(patient, analysisResults);
-                if (updatedFields.length > 0) {
-                    MemoryStorage.savePacient(phone, patient);
-                    console.log("Campos atualizados:", updatedFields);
-                    
-                    // Se a anamnese foi completada com esta atualização, enviar mensagem de transição
-                    if (isAnamnesisComplete(patient)) {
-                        return `Pronto ${patient.name}! Sua análise está completa. Agora você pode começar a incluir suas refeições do dia. Sem pressa, estarei aqui esperando você me atualizar.`;
-                    }
-                }
-            }
             return await algoritmoDeTratamentoDeMensagens(message, phone);
         }
 
-        // Se a anamnese está completa, processar como diário nutricional
-        return await processNutritionJournal(message, phone, openai);
+        // Analisar a intenção da mensagem
+        const analise = await analyzeMessageIntent(message, historico, patient, openai);
+        console.log('Análise da mensagem:', analise);
+
+        // Rotear baseado no tipo de mensagem
+        switch (analise.tipo) {
+            case 'refeicao':
+                return await processNutritionJournal(message, phone, openai);
+            
+            case 'consulta_info':
+            case 'duvida_nutricional':
+            case 'outro':
+                return analise.sugestao_resposta;
+        }
+
     } catch (error) {
         console.error("Erro no roteamento de mensagem:", error);
         return "Ocorreu um erro ao processar sua mensagem. Pode tentar novamente?";
