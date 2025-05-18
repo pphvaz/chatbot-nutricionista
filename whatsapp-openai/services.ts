@@ -109,7 +109,17 @@ export async function algoritmoDeTratamentoDeMensagens(messageBuffer: string, ph
     // Se todas as informações já foram coletadas E a primeira interação foi completada,
     // não precisamos mais analisar como anamnese
     if (!getMissingFields(patient).length && MemoryStorage.isPrimeiraInteracaoCompleta(phone)) {
-        return await processNewMeal(cleanMessage, phone, openai);
+        // Se for pergunta, responde como dúvida
+        if (cleanMessage.trim().endsWith('?') || cleanMessage.toLowerCase().startsWith('quantas') || cleanMessage.toLowerCase().startsWith('como') || cleanMessage.toLowerCase().startsWith('por que')) {
+            return await generateOpenAIResponse(openai, phone, basePrompt);
+        }
+        const tipo = await classifyMessage(cleanMessage, openai);
+        if (tipo === 'refeicao') {
+            return await processNewMeal(cleanMessage, phone, openai);
+        } else {
+            // Para dúvida ou sugestão, só responde, não registra refeição
+            return await generateOpenAIResponse(openai, phone, basePrompt);
+        }
     }
 
     // Pegar a última pergunta feita pela assistente
@@ -567,26 +577,23 @@ export async function generateAnswer(openai: OpenAI, message: string, prompt: st
     return `${response}`;
 }
 
-async function classifyMessage(message: string, openai: OpenAI): Promise<'anamnese' | 'refeicao'> {
+async function classifyMessage(message: string, openai: OpenAI): Promise<'anamnese' | 'refeicao' | 'duvida'> {
     const prompt = `
-    Analise esta mensagem e determine se ela está relacionada a:
-    1. Informações pessoais/anamnese (idade, peso, altura, sexo, nível de atividade, objetivo)
-    2. Descrição de refeição/alimentação
+    Analise a mensagem e responda apenas com:
+    - "refeicao" se o usuário relatou que CONSUMIU, comeu, bebeu, almoçou, jantou, lanchou, tomou, etc.
+    - "duvida" se for uma pergunta sobre alimentos, calorias, sugestões, etc.
+    - "anamnese" se for sobre dados pessoais.
 
     Mensagem: "${message}"
-
-    Responda APENAS com uma palavra:
-    - "anamnese" se for sobre informações pessoais
-    - "refeicao" se for sobre alimentação
     `;
-
     const response = await openai.chat.completions.create({
         model: "gpt-4.1",
         messages: [{ role: "system", content: prompt }],
         temperature: 0.1,
     });
-
     const classification = response.choices[0].message.content?.toLowerCase().trim();
-    return classification === 'anamnese' ? 'anamnese' : 'refeicao';
+    if (classification === 'refeicao') return 'refeicao';
+    if (classification === 'anamnese') return 'anamnese';
+    return 'duvida';
 }
 

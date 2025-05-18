@@ -180,10 +180,6 @@ export const MemoryStorage = {
         return users[phone].historico[date].primeiraInteracao;
     },
 
-    setPrimeiraInteracaoCompleta: (phone: string, date = getHoje()) => {
-        ensureUserExists(phone);
-        users[phone].historico[date].primeiraInteracao = false;
-    },
 
     // Get all data
     getHistoricoCompleto: () => users,
@@ -213,9 +209,27 @@ export const MemoryStorage = {
             this.updateUser(phone, userData);
         }
     },
+    
 
     isPrimeiraInteracaoCompleta(phone: string): boolean {
         const userData = this.getUser(phone);
         return userData?.primeiraInteracaoCompleta || false;
+    },
+
+    getRefeicoesDoDiaFormatted: (phone: string): string => {
+        const refeicoes = MemoryStorage.getRefeicoesDoDia(phone);
+        if (!refeicoes.length) {
+            return "Você ainda não registrou nenhuma refeição hoje.";
+        }
+        let resposta = "🍽️ Suas refeições de hoje:\n";
+        refeicoes.forEach((ref, idx) => {
+            try {
+                const meal = JSON.parse(ref);
+                resposta += `\n${idx + 1}. ${meal.description || 'Refeição'} - ${meal.calories} kcal`;
+            } catch {
+                resposta += `\n${idx + 1}. ${ref}`;
+            }
+        });
+        return resposta;
     }
 };

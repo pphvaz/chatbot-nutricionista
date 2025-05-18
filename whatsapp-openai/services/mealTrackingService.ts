@@ -20,6 +20,20 @@ interface DailyProgress {
 
 export async function processNewMeal(message: string, phone: string, openai: OpenAI): Promise<string> {
     const prompt = `
+    Você é um nutricionista responsável por registrar refeições de um diário alimentar.
+
+    REGRAS IMPORTANTES:
+    1. Calcule as calorias e macronutrientes (proteínas, carboidratos, gorduras) de forma REALISTA e PROPORCIONAL à quantidade informada.
+    2. Se o paciente relatar uma quantidade MUITO GRANDE (ex: 10 pizzas, 5kg de arroz), os valores devem ser ALTOS e compatíveis com a porção.
+    3. Nunca subestime calorias: 1 pizza inteira tem cerca de 1500-2000 kcal, 1 maçã média tem cerca de 50 kcal, etc.
+    4. Se a quantidade for absurda, registre os valores proporcionais, mas pode sugerir moderação de forma educada.
+    5. Sempre some os valores de cada unidade/porção.
+
+    EXEMPLOS:
+    - "Comi 10 pizzas inteiras" → Calorias: 15.000-20.000 kcal (não 20 kcal!)
+    - "Comi 10 maçãs" → Calorias: 500 kcal (não 20 kcal!)
+    - "Comi 2 fatias de pão" → Calorias: 140 kcal
+
     Analise esta refeição e forneça as informações nutricionais aproximadas:
     "${message}"
 
@@ -130,9 +144,16 @@ function formatMealResponse(meal: MealInfo, progress: DailyProgress, phone: stri
         }
     }
 
+    let statusLine = '';
+    if (remainingCals >= 0) {
+        statusLine = `⚡ Faltam: ${remainingCals} kcal`;
+    } else {
+        statusLine = `⚠️ Você ultrapassou sua meta em ${Math.abs(remainingCals)} kcal!`;
+    }
+
     return `✅ Refeição registrada: ${meal.calories} kcal (P: ${meal.protein}g | C: ${meal.carbs}g | G: ${meal.fats}g)
 📊 Progresso: ${progress.totalCalories}/${progress.goalCalories} kcal (${percentProgress}%)
-⚡ Faltam: ${remainingCals} kcal${suggestion}`;
+${statusLine}${suggestion}`;
 }
 
 export function getDailySummary(phone: string): string {
