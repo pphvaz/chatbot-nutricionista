@@ -1,5 +1,11 @@
 import { Pacient } from "./Pacient";
 
+export interface QuestionContext {
+    question: string;
+    type: 'nome' | 'gênero' | 'idade' | 'peso' | 'altura' | 'nivel_atividade' | 'objetivo';
+    timestamp: number;
+}
+
 type HistoricoDia = {
     mensagens: string[];
     refeicoes: string[];
@@ -17,9 +23,14 @@ type UserData = {
     phone: string;
     pacient: Pacient;
     historico: { [date: string]: HistoricoDia };
+    messages: { [date: string]: string[] };
+    firstMessage: boolean;
 };
 
-const users: { [phone: string]: UserData } = {};
+const users: { [key: string]: UserData } = {};
+const messageHistory: { [key: string]: string[] } = {};
+const firstMessageFlags: { [key: string]: boolean } = {};
+const questionContexts: { [key: string]: QuestionContext[] } = {};
 
 function getHoje(): string {
     return new Date().toISOString().split('T')[0]; // YYYY-MM-DD
@@ -31,7 +42,9 @@ function ensureUserExists(phone: string) {
             name: '',
             phone,
             pacient: new Pacient(),
-            historico: {}
+            historico: {},
+            messages: {},
+            firstMessage: true
         };
     }
     if (!users[phone].historico[getHoje()]) {
@@ -49,7 +62,7 @@ export const MemoryStorage = {
     // User management
     getUser: (phone: string): UserData | null => users[phone] || null,
     
-    createUser: (phone: string, name: string) => {
+    createUser: (phone: string, name: string): UserData => {
         ensureUserExists(phone);
         users[phone].name = name;
         return users[phone];
@@ -137,5 +150,23 @@ export const MemoryStorage = {
     },
 
     // Get all data
-    getHistoricoCompleto: () => users
+    getHistoricoCompleto: () => users,
+
+    addQuestionContext: (phone: string, context: QuestionContext) => {
+        if (!questionContexts[phone]) {
+            questionContexts[phone] = [];
+        }
+        questionContexts[phone].push(context);
+        // Keep only last 5 questions
+        if (questionContexts[phone].length > 5) {
+            questionContexts[phone].shift();
+        }
+    },
+
+    getLastQuestionContext: (phone: string): QuestionContext | null => {
+        if (!questionContexts[phone] || questionContexts[phone].length === 0) {
+            return null;
+        }
+        return questionContexts[phone][questionContexts[phone].length - 1];
+    }
 };

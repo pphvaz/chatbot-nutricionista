@@ -3,12 +3,26 @@ import { OpenAI } from 'openai';
 import { Pacient } from './entities/Pacient';
 import basePrompt from './prompts/basePrompt';
 import { analiseTMBPrompt, acompanhamentoPrompt, gerarResumoPaciente } from './prompts/nutritionPrompts';
+import type { QuestionContext } from './entities/memoryStorage';
 import { MemoryStorage } from './entities/memoryStorage';
 import { generateOpenAIResponse } from './services/assistantService';
+import { sendText } from './utils';
+
 dotenv.config();
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
 });
+
+// Add this interface at the top of the file, after the imports
+interface ExtractedInfo {
+    name?: string;
+    gender?: 'masculino' | 'feminino';
+    age?: number;
+    weight?: number;
+    height?: number;
+    activityLevel?: 'sedentario' | 'leve' | 'moderado' | 'ativo' | 'muito ativo';
+    goal?: 'perda de peso' | 'ganho de massa muscular' | 'manutenção';
+}
 
 export async function algoritmoDeTratamentoDeMensagens(messageBuffer: string, phone: string) {
     // Buscar as informações do paciente
@@ -20,9 +34,55 @@ export async function algoritmoDeTratamentoDeMensagens(messageBuffer: string, ph
 
     // Verificar se é a primeira mensagem do usuário
     if (MemoryStorage.isFirstMessage(phone)) {
-        const introducao = `Olá! 👋 Eu sou a Zubi, sua nutricionista virtual. Estou aqui para ajudar você a alcançar seus objetivos nutricionais de forma personalizada. Para começarmos, qual é o seu nome?`;
-        MemoryStorage.addMensagemAoHistorico(phone, introducao);
-        return introducao;
+        // Extrair saudações comuns da mensagem do usuário
+        const mensagemLower = messageBuffer.toLowerCase().trim();
+        
+        // Classificar o tipo de saudação
+        let tipoSaudacao = 'nenhuma';
+        
+        // Saudação completa (com "tudo bem" ou similar)
+        if (mensagemLower.includes('tudo bem') || 
+            mensagemLower.includes('tudo bom') || 
+            mensagemLower.includes('como vai')) {
+            tipoSaudacao = 'completa';
+        }
+        // Saudação simples
+        else if (mensagemLower === 'oi' || 
+                 mensagemLower === 'olá' || 
+                 mensagemLower === 'ola' || 
+                 mensagemLower === 'hello' || 
+                 mensagemLower === 'hey') {
+            tipoSaudacao = 'simples';
+        }
+
+        // Array de mensagens para enviar em sequência
+        const mensagens = [];
+
+        // Responder de acordo com o tipo de saudação
+        if (tipoSaudacao === 'completa') {
+            mensagens.push(`Oi! Tudo ótimo, obrigada por perguntar! 😊`);
+        } else if (tipoSaudacao === 'simples') {
+            mensagens.push(`Oi! 😊`);
+        }
+        
+        // Se houver saudação, esperar um pouco antes da próxima mensagem
+        if (tipoSaudacao !== 'nenhuma') {
+            await sendText(phone, mensagens[0]);
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Espera 1 segundo
+        }
+
+        // Apresentação em partes
+        mensagens.push(`Me chamo Zubi, sou uma nutricionista virtual especializada em ajudar pessoas a alcançarem seus objetivos de saúde. 🌱`);
+        await sendText(phone, mensagens[mensagens.length - 1]);
+        await new Promise(resolve => setTimeout(resolve, 1500)); // Espera 1.5 segundos
+
+        mensagens.push(`Estou aqui para criar um plano nutricional personalizado para você. Para começarmos essa jornada juntos, poderia me dizer seu nome? 😊`);
+        await sendText(phone, mensagens[mensagens.length - 1]);
+
+        // Adicionar todas as mensagens ao histórico
+        mensagens.forEach(msg => MemoryStorage.addMensagemAoHistorico(phone, msg));
+        
+        return ''; // Retorna vazio pois as mensagens já foram enviadas
     }
 
     // Obter histórico de mensagens do dia
@@ -33,39 +93,54 @@ export async function algoritmoDeTratamentoDeMensagens(messageBuffer: string, ph
     // Pegar a última pergunta feita pela assistente
     const ultimaPergunta = ultimasDuasMensagens.length >= 2 ? ultimasDuasMensagens[ultimasDuasMensagens.length - 2] : '';
 
-    // Analisar a mensagem para extrair informações
-    const extractedInfo = await extractInformation(messageBuffer, ultimaPergunta);
-    console.log('Informações extraídas:', extractedInfo);
+    // Analisar a mensagem para extrair informações e identificar perguntas
+    const analysisResult = await extractInformation(messageBuffer, ultimaPergunta, phone);
+    console.log('Resultado da análise:', analysisResult);
 
-    if (extractedInfo) {
-        // Se for uma resposta simples (sim/não) para gênero, verificar a pergunta anterior
-        if (ultimasDuasMensagens.length >= 2) {
-            const perguntaAnterior = ultimasDuasMensagens[ultimasDuasMensagens.length - 2].toLowerCase();
-            const respostaAtual = messageBuffer.toLowerCase();
+    // Se houver uma pergunta do usuário, responda primeiro
+    if (analysisResult.hasQuestion) {
+        const questionPrompt = `
+        Como uma nutricionista empática e profissional, responda à dúvida do paciente.
+        
+        Contexto da pergunta: ${analysisResult.questionContext}
+        Dados do paciente: ${JSON.stringify(patient)}
+        Última pergunta feita por você: "${ultimaPergunta}"
+        Mensagem do paciente: "${messageBuffer}"
 
-            if (perguntaAnterior.includes('sexo') || perguntaAnterior.includes('homem') || perguntaAnterior.includes('mulher')) {
-                if (respostaAtual === 'sim' || respostaAtual.includes('homem')) {
-                    extractedInfo.gender = 'masculino';
-                } else if (respostaAtual === 'não' || respostaAtual.includes('mulher')) {
-                    extractedInfo.gender = 'feminino';
-                }
-            }
+        Regras:
+        1. Seja empática e compreensiva
+        2. Explique o propósito das perguntas de forma clara
+        3. Relacione a explicação com o objetivo do paciente
+        4. Use linguagem acolhedora e profissional
+        5. Mantenha a resposta concisa e focada
+        `;
 
-            // Armazenar contexto útil se alguma informação foi extraída
-            for (const [campo, valor] of Object.entries(extractedInfo)) {
-                if (valor) {
-                    MemoryStorage.addContextoUtil(phone, campo, perguntaAnterior, respostaAtual);
-                }
-            }
-        }
+        const questionResponse = await openai.chat.completions.create({
+            model: "gpt-4",
+            messages: [{ role: "system", content: questionPrompt }],
+            temperature: 0.7,
+        });
 
+        const resposta = questionResponse.choices[0].message.content || '';
+        await sendText(phone, resposta);
+        MemoryStorage.addMensagemAoHistorico(phone, resposta);
+
+        // Aguardar um momento antes de continuar com o processo
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    // Se houver informações extraídas, processá-las
+    if (analysisResult.extracted) {
         // Atualizar os dados do paciente com as informações extraídas
-        updatePatientWithExtractedInfo(patient, extractedInfo);
+        updatePatientWithExtractedInfo(patient, analysisResult.extracted);
         MemoryStorage.savePacient(phone, patient);
         
         // Verificar se ainda faltam informações
         const missingFields = getMissingFields(patient);
         if (missingFields.length > 0) {
+            // Aguardar um momento antes de fazer a próxima pergunta
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            
             const nextQuestion = await generateNextQuestion(patient, missingFields[0]);
             MemoryStorage.addMensagemAoHistorico(phone, nextQuestion);
             return nextQuestion;
@@ -73,11 +148,19 @@ export async function algoritmoDeTratamentoDeMensagens(messageBuffer: string, ph
             // Se acabamos de completar todas as informações, gerar análise inicial
             if (historicoDoDia[historicoDoDia.length - 2]?.includes('objetivo')) {
                 const resumo = gerarResumoPaciente(patient);
+                
+                // Adicionar a última mensagem do paciente para contexto
+                const ultimaMensagemPaciente = messageBuffer;
+                
                 const analise = await openai.chat.completions.create({
                     model: "gpt-4",
                     messages: [
                         { role: "system", content: analiseTMBPrompt },
-                        { role: "user", content: resumo }
+                        { role: "user", content: `
+Última mensagem do paciente: "${ultimaMensagemPaciente}"
+
+${resumo}
+                        ` }
                     ],
                     temperature: 0.7,
                 });
@@ -85,12 +168,19 @@ export async function algoritmoDeTratamentoDeMensagens(messageBuffer: string, ph
                 const respostaAnalise = analise.choices[0].message.content || '';
                 MemoryStorage.addMensagemAoHistorico(phone, respostaAnalise);
                 
-                // Após enviar a análise, iniciar o acompanhamento
+                // Aguardar um momento antes de enviar a próxima mensagem para criar uma experiência mais natural
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                
+                // Iniciar o acompanhamento com foco nas preocupações do paciente
                 const inicioAcompanhamento = await openai.chat.completions.create({
                     model: "gpt-4",
                     messages: [
                         { role: "system", content: acompanhamentoPrompt },
-                        { role: "user", content: resumo }
+                        { role: "user", content: `
+Última mensagem do paciente: "${ultimaMensagemPaciente}"
+
+${resumo}
+                        ` }
                     ],
                     temperature: 0.7,
                 });
@@ -117,39 +207,387 @@ export async function algoritmoDeTratamentoDeMensagens(messageBuffer: string, ph
     return response;
 }
 
-async function extractInformation(message: string, ultimaPergunta: string = '') {
+async function extractInformation(message: string, ultimaPergunta: string = '', phone: string = '') {
+    // Special handling for gender responses
+    const isGenderQuestion = ultimaPergunta.toLowerCase().includes('homem ou mulher') || 
+                           ultimaPergunta.toLowerCase().includes('h/m') ||
+                           ultimaPergunta.toLowerCase().includes('sexo');
+                           
+    if (isGenderQuestion && message.length <= 2) {
+        const normalizedResponse = message.trim().toLowerCase();
+        if (['h', 'm', 'homem', 'mulher'].includes(normalizedResponse)) {
+            const gender = (normalizedResponse === 'h' || normalizedResponse === 'homem') ? 'masculino' : 'feminino';
+            return {
+                extracted: {
+                    gender: gender as 'masculino' | 'feminino'
+                },
+                hasQuestion: false,
+                questionContext: null
+            };
+        }
+    }
+
+    // Special handling for height responses
+    const isHeightQuestion = ultimaPergunta.toLowerCase().includes('altura') || 
+                           ultimaPergunta.toLowerCase().includes('alto');
+    if (isHeightQuestion) {
+        const numberMatch = message.match(/(\d+[.,]\d+|\d+)/);
+        if (numberMatch) {
+            const number = parseFloat(numberMatch[0].replace(',', '.'));
+            if (number > 1.4 && number < 2.2) {
+                return {
+                    extracted: {
+                        height: number * 100
+                    },
+                    hasQuestion: false,
+                    questionContext: null
+                };
+            } else if (number >= 140 && number <= 220) {
+                return {
+                    extracted: {
+                        height: number
+                    },
+                    hasQuestion: false,
+                    questionContext: null
+                };
+            }
+        }
+    }
+
+    // Store question context if it's asking for specific information
+    if (ultimaPergunta) {
+        const questionType = determineQuestionType(ultimaPergunta);
+        if (questionType) {
+            MemoryStorage.addQuestionContext(phone, {
+                question: ultimaPergunta,
+                type: questionType,
+                timestamp: Date.now()
+            });
+        }
+    }
+
+    // Get the last question context to help with interpretation
+    const lastContext = MemoryStorage.getLastQuestionContext(phone);
+    
+    // If we have a short answer and a context, try to interpret it based on the context
+    if (message.length <= 5 && lastContext) {
+        const value = message.trim();
+        switch (lastContext.type) {
+            case 'gênero':
+                if (['h', 'm', 'homem', 'mulher'].includes(value.toLowerCase())) {
+                    const gender = (value.toLowerCase() === 'h' || value.toLowerCase() === 'homem') ? 'masculino' : 'feminino';
+                    return {
+                        extracted: {
+                            gender: gender as 'masculino' | 'feminino'
+                        },
+                        hasQuestion: false,
+                        questionContext: null
+                    };
+                }
+                break;
+            case 'idade':
+                const age = parseInt(value);
+                if (isValidAge(age)) {
+                    return {
+                        extracted: {
+                            age
+                        },
+                        hasQuestion: false,
+                        questionContext: null
+                    };
+                }
+                break;
+            case 'peso':
+                const weight = parseFloat(value.replace(',', '.'));
+                if (isValidWeight(weight)) {
+                    return {
+                        extracted: {
+                            weight
+                        },
+                        hasQuestion: false,
+                        questionContext: null
+                    };
+                }
+                break;
+            case 'altura':
+                const height = parseFloat(value.replace(',', '.'));
+                if (height > 1.4 && height < 2.2) {
+                    return {
+                        extracted: {
+                            height: height * 100
+                        },
+                        hasQuestion: false,
+                        questionContext: null
+                    };
+                } else if (height >= 140 && height <= 220) {
+                    return {
+                        extracted: {
+                            height
+                        },
+                        hasQuestion: false,
+                        questionContext: null
+                    };
+                }
+                break;
+        }
+    }
+
+    // Check if this might be an initial message with all information
+    const isLikelyInitialMessage = message.toLowerCase().includes('eu sou') || 
+                                  (message.toLowerCase().includes('olá') && message.length > 100);
+
+    if (isLikelyInitialMessage) {
+        // Use a prompt optimized for complete initial messages
+        const initialPrompt = `
+        Analise cuidadosamente esta mensagem inicial do paciente:
+        "${message}"
+
+        Extraia TODAS as informações fornecidas de uma vez.
+        
+        Formate sua resposta exatamente assim:
+
+        INFORMAÇÕES COMPLETAS:
+        - Nome: [valor exato]
+        - Idade: [número]
+        - Gênero: [masculino/feminino]
+        - Peso: [número em kg]
+        - Altura: [número em metros]
+        - Nível de Atividade: [sedentario/leve/moderado/ativo/muito ativo]
+        - Objetivo: [perda de peso/ganho de massa muscular/manutenção]
+
+        ANÁLISE:
+        - Há pergunta do paciente? [sim/não]
+        - Contexto da pergunta: [descrição ou null]
+        - Confiança geral: [alta/média/baixa]
+        `;
+
+        const analysisResponse = await openai.chat.completions.create({
+            model: "gpt-4",
+            messages: [{ role: "user", content: initialPrompt }],
+            temperature: 0.1,
+        });
+
+        const analysisContent = analysisResponse.choices[0].message.content;
+        if (!analysisContent) {
+            return { extracted: null, hasQuestion: false, questionContext: null };
+        }
+
+        console.log('Análise completa (mensagem inicial):', analysisContent);
+
+        const extractedInfo: ExtractedInfo = {};
+        const lines = analysisContent.split('\n');
+
+        for (const line of lines) {
+            const trimmedLine = line.trim();
+            if (trimmedLine.startsWith('- Nome:')) {
+                const name = trimmedLine.split(':')[1].trim();
+                if (isValidName(name)) {
+                    extractedInfo.name = name;
+                }
+            } else if (trimmedLine.startsWith('- Gênero:')) {
+                const gender = trimmedLine.split(':')[1].trim();
+                if (isValidGender(gender)) {
+                    extractedInfo.gender = gender as 'masculino' | 'feminino';
+                }
+            } else if (trimmedLine.startsWith('- Idade:')) {
+                const age = parseInt(trimmedLine.split(':')[1].trim());
+                if (isValidAge(age)) {
+                    extractedInfo.age = age;
+                }
+            } else if (trimmedLine.startsWith('- Peso:')) {
+                const weight = parseFloat(trimmedLine.split(':')[1].trim());
+                if (isValidWeight(weight)) {
+                    extractedInfo.weight = weight;
+                }
+            } else if (trimmedLine.startsWith('- Altura:')) {
+                let height = parseFloat(trimmedLine.split(':')[1].trim());
+                if (height < 3) { // Se altura está em metros
+                    height = height * 100;
+                }
+                if (isValidHeight(height)) {
+                    extractedInfo.height = height;
+                }
+            } else if (trimmedLine.startsWith('- Nível de Atividade:')) {
+                const level = trimmedLine.split(':')[1].trim();
+                if (isValidActivityLevel(level)) {
+                    extractedInfo.activityLevel = level as 'sedentario' | 'leve' | 'moderado' | 'ativo' | 'muito ativo';
+                }
+            } else if (trimmedLine.startsWith('- Objetivo:')) {
+                const goal = trimmedLine.split(':')[1].trim();
+                if (isValidGoal(goal)) {
+                    extractedInfo.goal = goal as 'perda de peso' | 'ganho de massa muscular' | 'manutenção';
+                }
+            }
+        }
+
+        const hasQuestion = analysisContent.includes('Há pergunta do paciente? sim');
+        const questionContextMatch = analysisContent.match(/Contexto da pergunta: (.+)/);
+        const questionContext = questionContextMatch ? questionContextMatch[1].trim() : null;
+
+        // Debug logging
+        console.log('Mensagem original:', message);
+        console.log('Informações extraídas e validadas:', extractedInfo);
+
+        return {
+            extracted: Object.keys(extractedInfo).length > 0 ? extractedInfo : null,
+            hasQuestion,
+            questionContext: questionContext === 'null' ? null : questionContext
+        };
+    }
+
+    // If not an initial message, use the iterative approach for follow-up messages
+    let remainingText = message;
+    let allExtractedInfo: ExtractedInfo = {};
+    let hasQuestionFound = false;
+    let questionContextFound = null;
+    
+    // Continue processing while we have text and haven't processed more than 5 iterations
+    let iterations = 0;
+    const MAX_ITERATIONS = 5;
+
+    while (remainingText.trim() && iterations < MAX_ITERATIONS) {
+        iterations++;
+        
+        const analysisPrompt = `
+        Analise esta parte da mensagem do paciente:
+        "${remainingText}"
+
+        Identifique a PRIMEIRA informação útil encontrada.
+        
+        Formate sua resposta assim:
+
+        INFORMAÇÃO ENCONTRADA:
+        - Tipo: [nome/gênero/idade/peso/altura/nivel_atividade/objetivo]
+        - Valor: [valor extraído]
+        - Texto Original: [parte exata do texto que contém a informação]
+        - Texto Restante: [todo o texto após a informação encontrada]
+        - Confiança: [alta/média/baixa]
+
+        ANÁLISE:
+        - Há pergunta do paciente? [sim/não]
+        - Contexto da pergunta: [descrição ou null]
+        `;
+
+        const analysisResponse = await openai.chat.completions.create({
+            model: "gpt-4",
+            messages: [{ role: "user", content: analysisPrompt }],
+            temperature: 0.1,
+        });
+
+        const analysisContent = analysisResponse.choices[0].message.content;
+        if (!analysisContent) break;
+
+        console.log(`Iteração ${iterations} - Análise:`, analysisContent);
+
+        // Extract the information type and value
+        const typeMatch = analysisContent.match(/Tipo: (.+)/);
+        const valueMatch = analysisContent.match(/Valor: (.+)/);
+        const remainingMatch = analysisContent.match(/Texto Restante: (.+)/);
+        
+        if (typeMatch && valueMatch) {
+            const type = typeMatch[1].trim();
+            const value = valueMatch[1].trim();
+            
+            if (remainingMatch) {
+                remainingText = remainingMatch[1].trim();
+            }
+
+            // Process the extracted information based on type
+            switch (type) {
+                case 'nome':
+                    if (isValidName(value)) {
+                        allExtractedInfo.name = value;
+                    }
+                    break;
+                case 'gênero':
+                    if (isValidGender(value)) {
+                        allExtractedInfo.gender = value as 'masculino' | 'feminino';
+                    }
+                    break;
+                case 'idade':
+                    const age = parseInt(value);
+                    if (isValidAge(age)) {
+                        allExtractedInfo.age = age;
+                    }
+                    break;
+                case 'peso':
+                    const weight = parseFloat(value);
+                    if (isValidWeight(weight)) {
+                        allExtractedInfo.weight = weight;
+                    }
+                    break;
+                case 'altura':
+                    let height = parseFloat(value);
+                    if (height < 3) {
+                        height = height * 100;
+                    }
+                    if (isValidHeight(height)) {
+                        allExtractedInfo.height = height;
+                    }
+                    break;
+                case 'nivel_atividade':
+                    if (isValidActivityLevel(value)) {
+                        allExtractedInfo.activityLevel = value as 'sedentario' | 'leve' | 'moderado' | 'ativo' | 'muito ativo';
+                    }
+                    break;
+                case 'objetivo':
+                    if (isValidGoal(value)) {
+                        allExtractedInfo.goal = value as 'perda de peso' | 'ganho de massa muscular' | 'manutenção';
+                    }
+                    break;
+            }
+
+            if (!hasQuestionFound && analysisContent.includes('Há pergunta do paciente? sim')) {
+                hasQuestionFound = true;
+                const contextMatch = analysisContent.match(/Contexto da pergunta: (.+)/);
+                if (contextMatch) {
+                    questionContextFound = contextMatch[1].trim();
+                }
+            }
+        } else {
+            break;
+        }
+    }
+
+    return {
+        extracted: Object.keys(allExtractedInfo).length > 0 ? allExtractedInfo : null,
+        hasQuestion: hasQuestionFound,
+        questionContext: questionContextFound === 'null' ? null : questionContextFound
+    };
+}
+
+function determineQuestionType(question: string): QuestionContext['type'] | null {
+    const questionLower = question.toLowerCase();
+    
+    if (questionLower.includes('nome')) return 'nome';
+    if (questionLower.includes('homem ou mulher') || questionLower.includes('sexo')) return 'gênero';
+    if (questionLower.includes('idade') || questionLower.includes('anos')) return 'idade';
+    if (questionLower.includes('peso') || questionLower.includes('quilos')) return 'peso';
+    if (questionLower.includes('altura') || questionLower.includes('alto')) return 'altura';
+    if (questionLower.includes('atividade') || questionLower.includes('exercício')) return 'nivel_atividade';
+    if (questionLower.includes('objetivo') || questionLower.includes('meta')) return 'objetivo';
+    
+    return null;
+}
+
+async function inferGenderFromName(name: string): Promise<string | null> {
     const prompt = `
-    Analise a seguinte interação e extraia informações relevantes para anamnese nutricional.
-    Se encontrar alguma das informações abaixo, retorne em formato JSON, caso contrário retorne null.
+    Analise o seguinte nome e determine o gênero biológico mais provável com base nos padrões de nomes em português.
+    Nome: "${name}"
     
-    Considere o contexto da pergunta anterior e a resposta do usuário:
-    
-    ÚLTIMA PERGUNTA: "${ultimaPergunta}"
-    RESPOSTA DO USUÁRIO: "${message}"
-    
-    Se a última pergunta foi sobre campos específicos e a resposta contém números:
-    - Se a resposta contém dois números e a pergunta menciona altura e peso:
-      - O primeiro número é considerado altura em cm
-      - O segundo número é considerado peso em kg
-    - Se perguntou sobre peso -> considere o número como peso em kg
-    - Se perguntou sobre altura -> considere o número como altura em cm
-    - Se perguntou sobre idade -> considere o número como idade em anos
+    Regras:
+    1. Retorne APENAS "masculino" ou "feminino" se tiver alta confiança
+    2. Retorne "null" se o nome for ambíguo ou não tiver certeza
+    3. Considere:
+       - Terminações típicas (-a, -ana, -ela para feminino; -o, -dro, -los para masculino)
+       - Nomes compostos (considere todas as partes)
+       - Nomes tradicionalmente associados a cada gênero
     
     Exemplos:
-    Pergunta: "Qual sua altura e peso?" + Resposta: "175 70" = { "height": 175, "weight": 70 }
-    Pergunta: "Qual seu peso atual em kg?" + Resposta: "90" = { "weight": 90 }
-    Pergunta: "Qual sua altura em cm?" + Resposta: "186" = { "height": 186 }
-    
-    Informações a serem extraídas:
-    - name: nome da pessoa (se contiver apenas letras e espaços)
-    - age: idade em anos (número)
-    - gender: "masculino" ou "feminino"
-    - weight: peso em kg (número)
-    - height: altura em cm (número)
-    - activityLevel: "sedentario", "leve", "moderado", "ativo", ou "muito ativo"
-    - goal: "perda de peso", "ganho de massa muscular", ou "manutenção"
-
-    Retorne apenas o JSON com os campos encontrados, ou null se nenhum campo for identificado.
+    "Maria" -> "feminino"
+    "João" -> "masculino"
+    "Alex" -> null
+    "Andrea" -> null (pode ser usado para ambos os gêneros)
     `;
 
     const response = await openai.chat.completions.create({
@@ -158,48 +596,9 @@ async function extractInformation(message: string, ultimaPergunta: string = '') 
         temperature: 0.1,
     });
 
-    try {
-        const content = response.choices[0].message.content;
-        if (content && content.toLowerCase() !== "null") {
-            const extractedInfo = JSON.parse(content);
-            
-            // Validação adicional para respostas simples de gênero
-            if (message.toLowerCase() === 'h' || message.toLowerCase() === 'homem' || message.toLowerCase().includes('masculino')) {
-                extractedInfo.gender = 'masculino';
-            } else if (message.toLowerCase() === 'm' || message.toLowerCase() === 'mulher' || message.toLowerCase().includes('feminino')) {
-                extractedInfo.gender = 'feminino';
-            }
-            
-            // Validação para respostas combinadas de altura e peso
-            if (ultimaPergunta.toLowerCase().includes('altura') && ultimaPergunta.toLowerCase().includes('peso')) {
-                const numeros = message.match(/\d+/g);
-                if (numeros && numeros.length === 2) {
-                    const [altura, peso] = numeros.map(Number);
-                    if (altura > 100 && altura < 250) {
-                        extractedInfo.height = altura;
-                    }
-                    if (peso > 20 && peso < 300) {
-                        extractedInfo.weight = peso;
-                    }
-                }
-            } else {
-                // Validação para respostas individuais
-                const numeroResposta = parseInt(message);
-                if (!isNaN(numeroResposta)) {
-                    if (ultimaPergunta.toLowerCase().includes('peso')) {
-                        extractedInfo.weight = numeroResposta;
-                    } else if (ultimaPergunta.toLowerCase().includes('altura')) {
-                        extractedInfo.height = numeroResposta;
-                    } else if (ultimaPergunta.toLowerCase().includes('idade')) {
-                        extractedInfo.age = numeroResposta;
-                    }
-                }
-            }
-            
-            return extractedInfo;
-        }
-    } catch (error) {
-        console.error("Erro ao processar resposta:", error);
+    const inferredGender = response.choices[0].message.content?.trim().toLowerCase();
+    if (inferredGender === 'masculino' || inferredGender === 'feminino') {
+        return inferredGender;
     }
     return null;
 }
@@ -260,8 +659,17 @@ async function generateNextQuestion(patient: Pacient, missingField: string): Pro
     Regras:
     1. Se o campo for 'sexo', pergunte apenas "Você é homem ou mulher? (H/M)"
     2. Se faltam altura E peso, pergunte os dois juntos: "Qual sua altura (em cm) e peso (em kg)?"
-    3. Mantenha as perguntas diretas e profissionais
-    4. Evite linguagem muito informal ou emojis excessivos
+    3. Se o campo for 'nível de atividade física', use a seguinte estrutura:
+       "Qual é o seu nível de atividade física semanal?
+       
+       Escolha uma das opções:
+       - Sedentário (pouco ou nenhum exercício)
+       - Leve (exercício 1-3 vezes por semana)
+       - Moderado (exercício 3-5 vezes por semana)
+       - Ativo (exercício 6-7 vezes por semana)
+       - Muito ativo (exercícios intensos, 6-7 vezes por semana)"
+    4. Mantenha as perguntas diretas e profissionais
+    5. Evite linguagem muito informal ou emojis excessivos
     `;
 
     const response = await openai.chat.completions.create({
@@ -281,15 +689,42 @@ async function generateNextQuestion(patient: Pacient, missingField: string): Pro
     if (missingField === 'sexo') {
         return "Você é homem ou mulher? (H/M)";
     }
+
+    // Se for nível de atividade física, use o formato padronizado
+    if (missingField === 'nível de atividade física') {
+        return `Qual é o seu nível de atividade física semanal?
+
+Escolha uma das opções:
+- Sedentário (pouco ou nenhum exercício)
+- Leve (exercício 1-3 vezes por semana)
+- Moderado (exercício 3-5 vezes por semana)
+- Ativo (exercício 6-7 vezes por semana)
+- Muito ativo (exercícios intensos, 6-7 vezes por semana)`;
+    }
     
     return perguntaGerada;
 }
 
 // Funções de validação
 function isValidName(name: string): boolean {
-    return typeof name === 'string' && 
-           name.trim().length >= 2 && 
-           /^[A-Za-zÀ-ÖØ-öø-ÿ\s]+$/.test(name.trim());
+    if (!name || typeof name !== 'string') return false;
+    
+    // Remove extra spaces and normalize
+    const cleanName = name.trim().replace(/\s+/g, ' ');
+    
+    // Check minimum length (2 characters)
+    if (cleanName.length < 2) return false;
+    
+    // Check if contains only letters, spaces, and common name characters
+    if (!/^[A-Za-zÀ-ÖØ-öø-ÿ\s'-]+$/.test(cleanName)) return false;
+    
+    // Check if it's not just spaces or special characters
+    if (!/[A-Za-zÀ-ÖØ-öø-ÿ]/.test(cleanName)) return false;
+    
+    // Check if it's not too long (reasonable maximum length for a name)
+    if (cleanName.length > 100) return false;
+    
+    return true;
 }
 
 function isValidAge(age: number): boolean {

@@ -38,6 +38,9 @@ app.post('/log', async (req, res) => {
             if (audioTranscription) {
                 messageToProcess = audioTranscription;
                 console.log('Áudio transcrito:', messageToProcess);
+            } else {
+                console.error('Não foi possível transcrever o áudio');
+                return res.status(500).json({ error: 'Erro ao processar áudio' });
             }
         } catch (error) {
             console.error('Erro ao transcrever áudio:', error);
