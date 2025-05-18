@@ -59,7 +59,7 @@ export async function transcribeAudio(audio: AudioInput): Promise<string | null>
         }
 
         // Baixar o arquivo de áudio da URL da ZAPI
-        const audioResponse = await axios.get(audio.audioUrl, { 
+        const audioResponse = await axios.get<ArrayBuffer>(audio.audioUrl, { 
             responseType: 'arraybuffer',
             headers: {
                 'Accept': 'audio/*'

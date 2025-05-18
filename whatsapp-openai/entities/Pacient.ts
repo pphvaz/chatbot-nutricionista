@@ -23,30 +23,51 @@ export class Pacient {
             this.height === undefined ||
             this.age === undefined ||
             this.gender === undefined ||
-            this.activityLevel === undefined
+            this.activityLevel === undefined ||
+            this.goal === undefined
         ) {
             throw new Error('Todos os campos são obrigatórios para calcular a TMB.');
         }
+
+        // Calcular TMB base usando a fórmula de Harris-Benedict
         let tmb: number;
         if (this.gender === 'masculino') {
             tmb = 10 * this.weight + 6.25 * this.height - 5 * this.age + 5;
         } else {
             tmb = 10 * this.weight + 6.25 * this.height - 5 * this.age - 161;
         }
+
+        // Aplicar fator de atividade
+        let tmbWithActivity: number;
         switch (this.activityLevel) {
             case 'sedentario':
-                return tmb * 1.2;
+                tmbWithActivity = tmb * 1.2;
+                break;
             case 'leve':
-                return tmb * 1.375;
+                tmbWithActivity = tmb * 1.375;
+                break;
             case 'moderado':
-                return tmb * 1.55;
+                tmbWithActivity = tmb * 1.55;
+                break;
             case 'ativo':
-                return tmb * 1.725;
+                tmbWithActivity = tmb * 1.725;
+                break;
             case 'muito ativo':
-                return tmb * 1.9;
+                tmbWithActivity = tmb * 1.9;
+                break;
             default:
-                return tmb;
+                tmbWithActivity = tmb;
+        }
+
+        // Ajustar com base no objetivo
+        switch (this.goal) {
+            case 'perda de peso':
+                return Math.round(tmbWithActivity * 0.85); // Déficit de 15%
+            case 'ganho de massa muscular':
+                return Math.round(tmbWithActivity * 1.15); // Superávit de 15%
+            case 'manutenção':
+            default:
+                return Math.round(tmbWithActivity);
         }
     }
-
 } 

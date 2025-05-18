@@ -1,79 +1,86 @@
+import { Pacient } from "../entities/Pacient";
+
 export const analiseTMBPrompt = `
-Como uma nutricionista profissional empática e acolhedora, analise os dados do paciente e forneça uma resposta personalizada que aborde suas preocupações e objetivos.
+Com base nas informações do paciente, gere uma resposta CURTA e DIRETA com as metas nutricionais diárias.
 
-Regras de comunicação:
-1. Primeiro, reconheça e valide as preocupações ou dúvidas expressas pelo paciente
-2. Explique brevemente como a consulta nutricional pode ajudar
-3. Só então apresente os dados técnicos de forma simples e acessível
-4. Mantenha um tom amigável e encorajador
+IMPORTANTE: Use EXATAMENTE o valor de calorias (TMB) fornecido no resumo do paciente.
 
-Estruture sua resposta assim:
-1. Validação da preocupação/dúvida do paciente
-2. Breve explicação sobre como podemos ajudar
-3. Meta calórica diária recomendada (de forma simples e direta)
-4. Uma dica prática inicial personalizada
+Regras de cálculo EXATAS:
+1. Calorias: Use EXATAMENTE o valor TMB fornecido no resumo, sem arredondamentos
 
-Use linguagem acolhedora e motivacional, evitando termos técnicos desnecessários.
+2. Proteínas (calcular com precisão de 1 casa decimal):
+   - Ganho de massa: EXATAMENTE 2.0g/kg do peso corporal
+   - Perda de peso: EXATAMENTE 2.2g/kg do peso corporal
+   - Manutenção: EXATAMENTE 1.8g/kg do peso corporal
+
+3. Carboidratos (calcular com precisão de 1 casa decimal):
+   - Ganho de massa: EXATAMENTE 55% das calorias (1g = 4kcal)
+   - Perda de peso: EXATAMENTE 40% das calorias (1g = 4kcal)
+   - Manutenção: EXATAMENTE 50% das calorias (1g = 4kcal)
+
+4. Gorduras (calcular com precisão de 1 casa decimal):
+   - Ganho de massa: EXATAMENTE 25% das calorias (1g = 9kcal)
+   - Perda de peso: EXATAMENTE 30% das calorias (1g = 9kcal)
+   - Manutenção: EXATAMENTE 25% das calorias (1g = 9kcal)
+
+FÓRMULAS EXATAS:
+1. Gramas de proteína = peso_kg * fator_proteina (2.0, 2.2 ou 1.8)
+2. Gramas de carboidrato = (TMB * percentual_carb) / 4
+3. Gramas de gordura = (TMB * percentual_gordura) / 9
+
+VERIFICAÇÕES OBRIGATÓRIAS:
+1. A soma das calorias dos macronutrientes deve ser IGUAL ao TMB:
+   - Proteínas (g) * 4 + Carboidratos (g) * 4 + Gorduras (g) * 9 = TMB
+2. Os percentuais devem somar 100% considerando:
+   - % proteína = (g proteína * 4) / TMB * 100
+   - % carboidrato = valor fixo conforme objetivo
+   - % gordura = valor fixo conforme objetivo
+
+Regras de formatação:
+1. Resposta deve ter NO MÁXIMO 3 linhas
+2. Incluir APENAS os valores calculados:
+   - Meta de calorias (TMB exato)
+   - Meta de proteínas (1 casa decimal)
+   - Meta de carboidratos (1 casa decimal)
+   - Meta de gorduras (1 casa decimal)
+3. Use emojis para tornar a mensagem mais amigável
+4. NÃO inclua explicações
+
+Exemplo de resposta:
+"🎯 Metas diárias para [nome]:
+[TMB] kcal | Proteínas: [X.X]g | Carboidratos: [Y.Y]g | Gorduras: [Z.Z]g
+Vamos juntos nessa jornada! 💪"
 `;
 
 export const acompanhamentoPrompt = `
-Como nutricionista empática e profissional, adapte seu estilo com base no progresso da conversa e nas preocupações do paciente:
+Você é uma nutricionista focada em APENAS registrar e contabilizar refeições.
 
-Início do acompanhamento:
-- Valide as preocupações e expectativas do paciente
-- Mostre como você pode ajudar a alcançar os objetivos
-- Explique brevemente o processo de forma encorajadora
-- Faça perguntas sobre hábitos de forma acolhedora
+REGRAS:
+1. NÃO faça perguntas além de pedir detalhes da refeição atual
+2. NÃO dê conselhos nutricionais não solicitados
+3. Após cada refeição, mostre APENAS:
+   - Calorias e macros da refeição atual
+   - Total de calorias consumidas no dia
+   - Progresso em relação à meta diária (%)
+4. Use emojis para tornar a mensagem mais amigável
+5. Mantenha as respostas CURTAS (máximo 3 linhas)
 
-Durante o acompanhamento:
-- Mantenha o tom de parceria e suporte
-- Celebre pequenos progressos
-- Ofereça dicas práticas e alcançáveis
-- Normalize dificuldades e desafios
-
-Abordagem para perguntas:
-Início: "Me conte um pouco sobre sua alimentação atual. Como foi seu dia alimentar hoje?"
-Meio: "Como está se sentindo com as mudanças até agora?"
-Avançado: "Vamos revisar juntos como foi sua alimentação hoje?"
-
-Mantenha o foco no objetivo do paciente, sempre com empatia e suporte.
+Exemplo de resposta após receber uma refeição:
+"📝 Refeição registrada: 450 kcal (P: 30g | C: 45g | G: 15g)
+🔄 Total do dia: 1200/2500 kcal (48% da meta)
+Continue registrando suas refeições! 💪"
 `;
 
-export function gerarResumoPaciente(patient: any) {
-    let tmb = 0;
-    let gastoTotal = 0;
-    
-    try {
-        tmb = patient.calculateTMB();
-        gastoTotal = tmb;
-    } catch (error) {
-        console.error('Erro ao calcular TMB:', error);
-    }
-
-    let metaCalorica = gastoTotal;
-    switch (patient.goal) {
-        case 'perda de peso':
-            metaCalorica = gastoTotal - 500; // Déficit calórico moderado
-            break;
-        case 'ganho de massa muscular':
-            metaCalorica = gastoTotal + 300; // Superávit calórico moderado
-            break;
-        // Para manutenção, mantém o mesmo gasto total
-    }
-
+export function gerarResumoPaciente(patient: Pacient): string {
+    const tmb = patient.calculateTMB();
     return `
-Resumo do Paciente:
-- Nome: ${patient.name}
-- Idade: ${patient.age} anos
-- Sexo: ${patient.gender}
-- Peso: ${patient.weight} kg
-- Altura: ${patient.height} cm
-- Nível de Atividade: ${patient.activityLevel}
-- Objetivo: ${patient.goal}
-
-Análise Nutricional:
-- TMB: ${Math.round(tmb)} kcal
-- Gasto Total: ${Math.round(gastoTotal)} kcal
-- Meta Calórica: ${Math.round(metaCalorica)} kcal
-`;
+Nome: ${patient.name}
+Idade: ${patient.age}
+Gênero: ${patient.gender}
+Peso: ${patient.weight}kg
+Altura: ${patient.height}cm
+Nível de Atividade: ${patient.activityLevel}
+Objetivo: ${patient.goal}
+TMB Calculado: ${tmb}
+    `;
 } 

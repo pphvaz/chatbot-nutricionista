@@ -6,8 +6,14 @@ export interface QuestionContext {
     timestamp: number;
 }
 
+type MessageType = {
+    role: 'system' | 'user';
+    content: string;
+    timestamp: number;
+};
+
 type HistoricoDia = {
-    mensagens: string[];
+    mensagens: MessageType[];
     refeicoes: string[];
     contextosUteis: {
         campo: string;
@@ -25,6 +31,8 @@ type UserData = {
     historico: { [date: string]: HistoricoDia };
     messages: { [date: string]: string[] };
     firstMessage: boolean;
+    primeiraInteracaoCompleta: boolean;
+    lastQuestionContext?: QuestionContext;
 };
 
 const users: { [key: string]: UserData } = {};
@@ -44,7 +52,8 @@ function ensureUserExists(phone: string) {
             pacient: new Pacient(),
             historico: {},
             messages: {},
-            firstMessage: true
+            firstMessage: true,
+            primeiraInteracaoCompleta: false
         };
     }
     if (!users[phone].historico[getHoje()]) {
@@ -105,16 +114,43 @@ export const MemoryStorage = {
         users[phone].historico[date].refeicoes.push(refeicao);
     },
 
-    // Message history management
-    getHistoricoDoDia: (phone: string, date = getHoje()): string[] => {
+    // Updated message history management
+    getHistoricoDoDia: (phone: string, date = getHoje()): MessageType[] => {
         ensureUserExists(phone);
         return users[phone].historico[date]?.mensagens || [];
     },
 
-    addMensagemAoHistorico: (phone: string, message: string, date = getHoje()) => {
+    addMensagemAoHistorico: (phone: string, message: string, role: 'system' | 'user' = 'user', date = getHoje()) => {
         ensureUserExists(phone);
-        users[phone].historico[date].mensagens.push(message);
+        const messageObj: MessageType = {
+            role,
+            content: message,
+            timestamp: Date.now()
+        };
+        users[phone].historico[date].mensagens.push(messageObj);
         users[phone].historico[date].contadorMensagens++;
+    },
+
+    getUltimasMensagens: (phone: string, count: number = 2, date = getHoje()): MessageType[] => {
+        ensureUserExists(phone);
+        const mensagens = users[phone].historico[date]?.mensagens || [];
+        return mensagens.slice(-count);
+    },
+
+    getUltimaPerguntaSistema: (phone: string, date = getHoje()): string | null => {
+        ensureUserExists(phone);
+        const mensagens = users[phone].historico[date]?.mensagens || [];
+        for (let i = mensagens.length - 1; i >= 0; i--) {
+            if (mensagens[i].role === 'system' && mensagens[i].content.includes('?')) {
+                return mensagens[i].content;
+            }
+        }
+        return null;
+    },
+
+    isConfirmationMessage: (message: string): boolean => {
+        const confirmations = ['ok', 'sim', 'isso', 'isso mesmo', 'exato', 'exatamente', 'correto', 'é isso'];
+        return confirmations.includes(message.toLowerCase().trim());
     },
 
     // Contextos úteis management
@@ -168,5 +204,18 @@ export const MemoryStorage = {
             return null;
         }
         return questionContexts[phone][questionContexts[phone].length - 1];
+    },
+
+    setPrimeiraInteracaoCompleta(phone: string) {
+        const userData = this.getUser(phone);
+        if (userData) {
+            userData.primeiraInteracaoCompleta = true;
+            this.updateUser(phone, userData);
+        }
+    },
+
+    isPrimeiraInteracaoCompleta(phone: string): boolean {
+        const userData = this.getUser(phone);
+        return userData?.primeiraInteracaoCompleta || false;
     }
 };
