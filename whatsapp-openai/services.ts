@@ -30,8 +30,11 @@ export async function algoritmoDeTratamentoDeMensagens(messageBuffer: string, ph
     const ultimasDuasMensagens = historicoDoDia.slice(-2);
     console.log('Últimas duas mensagens:', ultimasDuasMensagens);
 
+    // Pegar a última pergunta feita pela assistente
+    const ultimaPergunta = ultimasDuasMensagens.length >= 2 ? ultimasDuasMensagens[ultimasDuasMensagens.length - 2] : '';
+
     // Analisar a mensagem para extrair informações
-    const extractedInfo = await extractInformation(messageBuffer);
+    const extractedInfo = await extractInformation(messageBuffer, ultimaPergunta);
     console.log('Informações extraídas:', extractedInfo);
 
     if (extractedInfo) {
@@ -114,15 +117,28 @@ export async function algoritmoDeTratamentoDeMensagens(messageBuffer: string, ph
     return response;
 }
 
-async function extractInformation(message: string) {
+async function extractInformation(message: string, ultimaPergunta: string = '') {
     const prompt = `
-    Analise a seguinte mensagem e extraia informações relevantes para anamnese nutricional.
+    Analise a seguinte interação e extraia informações relevantes para anamnese nutricional.
     Se encontrar alguma das informações abaixo, retorne em formato JSON, caso contrário retorne null.
     
-    Considere também respostas simples como:
-    - "sim" ou "masculino" para confirmar gênero masculino
-    - "não" ou "feminino" para confirmar gênero feminino
-    - Números sozinhos podem ser idade, peso ou altura dependendo do contexto
+    Considere o contexto da pergunta anterior e a resposta do usuário:
+    
+    ÚLTIMA PERGUNTA: "${ultimaPergunta}"
+    RESPOSTA DO USUÁRIO: "${message}"
+    
+    Se a última pergunta foi sobre campos específicos e a resposta contém números:
+    - Se a resposta contém dois números e a pergunta menciona altura e peso:
+      - O primeiro número é considerado altura em cm
+      - O segundo número é considerado peso em kg
+    - Se perguntou sobre peso -> considere o número como peso em kg
+    - Se perguntou sobre altura -> considere o número como altura em cm
+    - Se perguntou sobre idade -> considere o número como idade em anos
+    
+    Exemplos:
+    Pergunta: "Qual sua altura e peso?" + Resposta: "175 70" = { "height": 175, "weight": 70 }
+    Pergunta: "Qual seu peso atual em kg?" + Resposta: "90" = { "weight": 90 }
+    Pergunta: "Qual sua altura em cm?" + Resposta: "186" = { "height": 186 }
     
     Informações a serem extraídas:
     - name: nome da pessoa (se contiver apenas letras e espaços)
@@ -132,8 +148,6 @@ async function extractInformation(message: string) {
     - height: altura em cm (número)
     - activityLevel: "sedentario", "leve", "moderado", "ativo", ou "muito ativo"
     - goal: "perda de peso", "ganho de massa muscular", ou "manutenção"
-
-    Mensagem: "${message}"
 
     Retorne apenas o JSON com os campos encontrados, ou null se nenhum campo for identificado.
     `;
@@ -149,11 +163,37 @@ async function extractInformation(message: string) {
         if (content && content.toLowerCase() !== "null") {
             const extractedInfo = JSON.parse(content);
             
-            // Validação adicional para respostas simples
-            if (message.toLowerCase() === 'sim' || message.toLowerCase() === 'masculino') {
+            // Validação adicional para respostas simples de gênero
+            if (message.toLowerCase() === 'h' || message.toLowerCase() === 'homem' || message.toLowerCase().includes('masculino')) {
                 extractedInfo.gender = 'masculino';
-            } else if (message.toLowerCase() === 'não' || message.toLowerCase() === 'feminino') {
+            } else if (message.toLowerCase() === 'm' || message.toLowerCase() === 'mulher' || message.toLowerCase().includes('feminino')) {
                 extractedInfo.gender = 'feminino';
+            }
+            
+            // Validação para respostas combinadas de altura e peso
+            if (ultimaPergunta.toLowerCase().includes('altura') && ultimaPergunta.toLowerCase().includes('peso')) {
+                const numeros = message.match(/\d+/g);
+                if (numeros && numeros.length === 2) {
+                    const [altura, peso] = numeros.map(Number);
+                    if (altura > 100 && altura < 250) {
+                        extractedInfo.height = altura;
+                    }
+                    if (peso > 20 && peso < 300) {
+                        extractedInfo.weight = peso;
+                    }
+                }
+            } else {
+                // Validação para respostas individuais
+                const numeroResposta = parseInt(message);
+                if (!isNaN(numeroResposta)) {
+                    if (ultimaPergunta.toLowerCase().includes('peso')) {
+                        extractedInfo.weight = numeroResposta;
+                    } else if (ultimaPergunta.toLowerCase().includes('altura')) {
+                        extractedInfo.height = numeroResposta;
+                    } else if (ultimaPergunta.toLowerCase().includes('idade')) {
+                        extractedInfo.age = numeroResposta;
+                    }
+                }
             }
             
             return extractedInfo;
@@ -213,11 +253,15 @@ function getMissingFields(patient: Pacient): string[] {
 
 async function generateNextQuestion(patient: Pacient, missingField: string): Promise<string> {
     const prompt = `
-    Como uma nutricionista amigável, gere uma pergunta natural para obter o(a) ${missingField} do paciente.
+    Como uma nutricionista profissional, gere uma pergunta direta e objetiva para obter o(a) ${missingField} do paciente.
     Considere o que já sabemos sobre o paciente:
     ${JSON.stringify(patient, null, 2)}
     
-    Faça a pergunta de forma conversacional e empática.
+    Regras:
+    1. Se o campo for 'sexo', pergunte apenas "Você é homem ou mulher? (H/M)"
+    2. Se faltam altura E peso, pergunte os dois juntos: "Qual sua altura (em cm) e peso (em kg)?"
+    3. Mantenha as perguntas diretas e profissionais
+    4. Evite linguagem muito informal ou emojis excessivos
     `;
 
     const response = await openai.chat.completions.create({
@@ -226,7 +270,19 @@ async function generateNextQuestion(patient: Pacient, missingField: string): Pro
         temperature: 0.7,
     });
 
-    return response.choices[0].message.content || `Por favor, me fale seu ${missingField}:`;
+    const perguntaGerada = response.choices[0].message.content || `Por favor, me informe seu ${missingField}:`;
+    
+    // Se ainda faltam altura e peso, combine as perguntas
+    if (missingField === 'altura' && !patient.weight) {
+        return "Qual sua altura (em cm) e peso (em kg)?";
+    }
+    
+    // Se for pergunta de gênero, use o formato direto
+    if (missingField === 'sexo') {
+        return "Você é homem ou mulher? (H/M)";
+    }
+    
+    return perguntaGerada;
 }
 
 // Funções de validação

@@ -1,7 +1,7 @@
 import express from 'express';
 import bodyParser from 'body-parser';
 import cors from 'cors';
-import { sendText } from './utils';
+import { sendText, transcribeAudio } from './utils';
 import { algoritmoDeTratamentoDeMensagens, generateAnswer } from './services';
 import { MemoryStorage } from './entities/memoryStorage';
 import { Pacient } from './entities/Pacient';
@@ -25,19 +25,35 @@ const timeoutHandles: { [phone: string]: NodeJS.Timeout } = {};
 app.post('/log', async (req, res) => {
     console.log('Body recebido:', req.body);
 
-    const { message, phone } = req.body;
+    const { message, phone, audio } = req.body;
 
-    console.log(`message: ${message}, phone: ${phone}`);
+    console.log(`message: ${message}, phone: ${phone}, audio: ${audio ? 'presente' : 'ausente'}`);
 
-    if (!message) {
+    let messageToProcess = message;
+
+    // Se tiver áudio, fazer a transcrição
+    if (audio) {
+        try {
+            const audioTranscription = await transcribeAudio(audio);
+            if (audioTranscription) {
+                messageToProcess = audioTranscription;
+                console.log('Áudio transcrito:', messageToProcess);
+            }
+        } catch (error) {
+            console.error('Erro ao transcrever áudio:', error);
+            return res.status(500).json({ error: 'Erro ao processar áudio' });
+        }
+    }
+
+    if (!messageToProcess) {
         return res.status(400).json({ error: 'Nenhuma mensagem recebida' });
     }
 
-// Adiciona a mensagem ao buffer do usuário
+    // Adiciona a mensagem ao buffer do usuário
     if (!messageBuffer[phone]) {
         messageBuffer[phone] = [];
     }
-    messageBuffer[phone].push(message);
+    messageBuffer[phone].push(messageToProcess);
 
     // Reinicia o timeout
     if (timeoutHandles[phone]) {

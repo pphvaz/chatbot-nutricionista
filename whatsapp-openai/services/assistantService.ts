@@ -16,9 +16,15 @@ export async function generateOpenAIResponse(openai: OpenAI, phone: string, base
     const contextosFormatados = contextosUteis.map(ctx => 
         `Quando perguntei "${ctx.pergunta}", ${patient.name} respondeu "${ctx.resposta}" (${ctx.campo})`
     ).join('\n');
+
+    // Obter contagem de mensagens
+    const numeroMensagens = MemoryStorage.getMessageCount(phone);
     
     const systemPrompt = `${basePrompt}
-    
+
+Número de mensagens na conversa: ${numeroMensagens}
+(Adapte seu estilo de acordo com a progressão da conversa)
+
 Informações atuais do paciente:
 ${JSON.stringify(patient, null, 2)}
 

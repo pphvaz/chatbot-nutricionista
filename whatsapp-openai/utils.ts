@@ -1,4 +1,11 @@
 import axios from 'axios';
+import { OpenAI } from 'openai';
+import dotenv from 'dotenv';
+
+dotenv.config();
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+});
 
 export async function sendText(phone: string, text: string) {
 
@@ -27,5 +34,28 @@ export async function sendText(phone: string, text: string) {
     } catch (error) {
         console.error('Error sending message:', error);
         throw error;
+    }
+}
+
+export async function transcribeAudio(audioUrl: string): Promise<string | null> {
+    try {
+        // Baixar o arquivo de áudio da URL da ZAPI
+        const audioResponse = await axios.get(audioUrl, { responseType: 'arraybuffer' });
+        const audioBuffer = Buffer.from(audioResponse.data);
+
+        // Criar um Blob com o conteúdo do áudio
+        const audioBlob = new Blob([audioBuffer], { type: 'audio/ogg' });
+
+        // Transcrever usando o Whisper da OpenAI
+        const transcription = await openai.audio.transcriptions.create({
+            file: audioBlob,
+            model: "whisper-1",
+            language: "pt"
+        });
+
+        return transcription.text;
+    } catch (error) {
+        console.error('Erro ao transcrever áudio:', error);
+        return null;
     }
 }
